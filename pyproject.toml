@@ -1,0 +1,27 @@
+[project]
+name = "opsrunbook-copilot"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["services/api/src", "packages/contracts/src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+  "E501",   # line length handled by formatter
+  "B008",   # function call in default arg (FastAPI Depends pattern)
+  "UP007",  # X | Y union syntax — keep Optional for clarity
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["contracts", "src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "services/api/tests", "services/collectors/tests", "packages/contracts/tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-q --tb=short"

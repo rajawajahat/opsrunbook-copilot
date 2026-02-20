@@ -1,0 +1,51 @@
+{
+  "schema": "evidence_snapshot.v1",
+  "incident_id": "inc-test123",
+  "collector_run_id": "run-abc",
+  "created_at": "2026-02-18T00:00:00+00:00",
+  "service": "loggen",
+  "environment": "dev",
+  "time_window": {
+    "start": "2026-02-17T23:45:00+00:00",
+    "end": "2026-02-18T00:00:00+00:00"
+  },
+  "redaction": { "enabled": false },
+  "collectors": [
+    {
+      "collector_type": "logs",
+      "skipped": false,
+      "evidence_ref": {
+        "collector_type": "logs",
+        "s3_bucket": "test-bucket",
+        "s3_key": "evidence/inc-test123/run-abc/logs.json",
+        "sha256": "aaa111",
+        "byte_size": 500,
+        "truncated": false
+      },
+      "error": null,
+      "cause": null
+    },
+    {
+      "collector_type": "metrics",
+      "skipped": false,
+      "evidence_ref": {
+        "collector_type": "metrics",
+        "s3_bucket": "test-bucket",
+        "s3_key": "evidence/inc-test123/run-abc/metrics.json",
+        "sha256": "bbb222",
+        "byte_size": 300,
+        "truncated": false
+      },
+      "error": null,
+      "cause": null
+    },
+    {
+      "collector_type": "stepfn",
+      "skipped": true,
+      "evidence_ref": null,
+      "error": null,
+      "cause": null
+    }
+  ],
+  "truncated": false
+}

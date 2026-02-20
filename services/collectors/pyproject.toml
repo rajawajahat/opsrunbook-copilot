@@ -1,0 +1,18 @@
+[project]
+name = "opsrunbook-collectors"
+version = "0.1.0"
+description = "Collectors for OpsRunbook Copilot"
+requires-python = ">=3.11"
+dependencies = [
+  "boto3>=1.34",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,211 @@
+%% OpsRunbook Copilot v1 – Architecture Diagrams (Mermaid)
+%% Copy-paste each diagram into Miro's Mermaid app or any Mermaid renderer.
+
+%% ═══════════════════════════════════════════════════════════════════
+%% DIAGRAM 1: High-Level Architecture
+%% ═══════════════════════════════════════════════════════════════════
+
+graph TB
+    subgraph External["External Systems"]
+        GH["GitHub App"]
+        JIRA["Jira Cloud"]
+        TEAMS["MS Teams"]
+    end
+
+    subgraph API["FastAPI Service"]
+        EP_INC["POST /v1/incidents"]
+        EP_PKT["GET .../packet/latest"]
+        EP_ACT["GET .../actions/latest"]
+        EP_WH["POST /v1/webhooks/github"]
+        EP_REPLAY["POST .../replay"]
+    end
+
+    subgraph Orchestration["AWS Step Functions"]
+        ORCH["Orchestrator<br/>State Machine"]
+        PRC["PR Review Cycle<br/>State Machine"]
+    end
+
+    subgraph Collectors["Collector Lambdas"]
+        CL["Logs Collector<br/>(CloudWatch Insights)"]
+        CM["Metrics Collector<br/>(CloudWatch Metrics)"]
+        CS["StepFn Collector<br/>(Execution History)"]
+    end
+
+    subgraph Analysis["Analysis Lambdas"]
+        SP["Snapshot Persist"]
+        AZ["Analyzer<br/>(Stub/LLM)"]
+        AR["Actions Runner"]
+    end
+
+    subgraph Storage["AWS Storage"]
+        S3["S3<br/>Evidence Bucket"]
+        DDB_I["DynamoDB<br/>Incidents Table"]
+        DDB_S["DynamoDB<br/>Snapshots Table"]
+        DDB_P["DynamoDB<br/>Packets Table"]
+    end
+
+    EB["EventBridge<br/>Custom Bus"]
+
+    EP_INC --> ORCH
+    ORCH --> CL & CM & CS
+    CL & CM & CS --> S3
+    ORCH --> SP
+    SP --> S3 & DDB_S
+    SP --> EB
+    EB -->|evidence.snapshot.persisted| AZ
+    AZ --> S3 & DDB_P
+    AZ --> EB
+    EB -->|incident.analyzed| AR
+    AR --> JIRA & TEAMS & GH
+    AR --> DDB_I
+    EP_PKT --> DDB_P & S3
+    EP_ACT --> DDB_I
+    EP_WH --> PRC
+    PRC --> GH
+
+%% ═══════════════════════════════════════════════════════════════════
+%% DIAGRAM 2: Incident Processing Sequence
+%% ═══════════════════════════════════════════════════════════════════
+
+sequenceDiagram
+    participant User
+    participant API as FastAPI
+    participant SFN as Step Functions<br/>(Orchestrator)
+    participant CL as Logs Collector
+    participant CM as Metrics Collector
+    participant CS as StepFn Collector
+    participant SP as Snapshot Persist
+    participant S3
+    participant DDB as DynamoDB
+    participant EB as EventBridge
+    participant AZ as Analyzer
+    participant AR as Actions Runner
+
+    User->>API: POST /v1/incidents
+    API->>DDB: Store incident metadata
+    API->>SFN: StartExecution(input)
+    API-->>User: 200 {incident_id, collector_run_id}
+
+    par Parallel Collection
+        SFN->>CL: Invoke (log_groups, time_window)
+        CL->>S3: PUT evidence/.../logs.json
+        CL-->>SFN: {evidence_ref}
+    and
+        SFN->>CM: Invoke (metric_queries, time_window)
+        CM->>S3: PUT evidence/.../metrics.json
+        CM-->>SFN: {evidence_ref}
+    and
+        SFN->>CS: Invoke (state_machine_arns, time_window)
+        CS->>S3: PUT evidence/.../stepfn.json
+        CS-->>SFN: {evidence_ref}
+    end
+
+    SFN->>SP: Invoke (aggregate results)
+    SP->>S3: PUT evidence/{id}/{run}.json (manifest)
+    SP->>DDB: PutItem SNAPSHOT#...
+    SP->>EB: PutEvents(evidence.snapshot.persisted)
+
+    EB->>AZ: Trigger analyzer
+    AZ->>S3: GET manifest + evidence objects
+    AZ->>AZ: Produce IncidentPacketV1
+    AZ->>S3: PUT packets/{id}/{run}.json
+    AZ->>DDB: PutItem PACKET#...
+    AZ->>EB: PutEvents(incident.analyzed)
+
+    EB->>AR: Trigger actions runner
+    Note over AR: Idempotency check per action
+
+    AR->>AR: Generate ActionPlan
+    AR->>AR: Resolve repo (mapping → verify → heuristic)
+    Note over AR: Confidence gate: skip PR if < 0.7
+
+    User->>API: GET .../packet/latest
+    API->>DDB: Query PACKET#... desc
+    API->>S3: GET packet JSON
+    API-->>User: 200 {packet}
+
+    User->>API: GET .../actions/latest
+    API->>DDB: Get ACTIONS#LATEST
+    API-->>User: 200 {action_plan, results}
+
+%% ═══════════════════════════════════════════════════════════════════
+%% DIAGRAM 3: Action Execution Sequence
+%% ═══════════════════════════════════════════════════════════════════
+
+sequenceDiagram
+    participant AR as Actions Runner
+    participant DDB as DynamoDB
+    participant JIRA as Jira Cloud
+    participant TEAMS as MS Teams
+    participant GH as GitHub API
+    participant RR as RepoResolver
+
+    Note over AR: Check AUTOMATION_ENABLED
+
+    AR->>DDB: Check existing Jira action (idempotency)
+    alt Already executed
+        DDB-->>AR: Stored result
+    else New
+        AR->>JIRA: Create issue
+        JIRA-->>AR: {issue_key, url}
+        AR->>DDB: Persist ACTION# result
+    end
+
+    AR->>DDB: Check existing Teams action (idempotency)
+    alt Already executed
+        DDB-->>AR: Stored result
+    else New
+        AR->>TEAMS: Send notification
+        TEAMS-->>AR: 200 OK
+        AR->>DDB: Persist ACTION# result
+    end
+
+    AR->>DDB: Check existing PR action (idempotency)
+    alt Already executed
+        DDB-->>AR: Stored result
+    else New
+        AR->>RR: resolve_repo(packet, checker)
+        RR-->>AR: {repo, confidence, verification, reasons}
+
+        alt confidence >= 0.7
+            AR->>GH: Create branch + commit + PR
+            GH-->>AR: {pr_url, pr_number}
+            AR->>DDB: Persist ACTION# result
+        else confidence < 0.7
+            AR->>AR: Skip (log reason)
+            AR->>DDB: Persist skipped result
+        end
+    end
+
+    AR->>DDB: Update ACTIONS#LATEST pointer
+
+%% ═══════════════════════════════════════════════════════════════════
+%% DIAGRAM 4: DynamoDB Data Model
+%% ═══════════════════════════════════════════════════════════════════
+
+erDiagram
+    INCIDENTS_TABLE {
+        string pk "INCIDENT#{incident_id}"
+        string sk "META | ACTION#... | ACTIONPLAN#... | ACTIONS#LATEST"
+        string incident_id
+        string service
+        string environment
+        string created_at
+    }
+
+    SNAPSHOTS_TABLE {
+        string pk "INCIDENT#{incident_id}"
+        string sk "SNAPSHOT#{ts}#{run} | RUN#{run_id}"
+        string evidence_bucket
+        string evidence_key
+        string evidence_sha256
+    }
+
+    PACKETS_TABLE {
+        string pk "INCIDENT#{incident_id}"
+        string sk "PACKET#{ts}#{run}"
+        string collector_run_id
+        string packet_bucket
+        string packet_key
+        string packet_sha256
+    }

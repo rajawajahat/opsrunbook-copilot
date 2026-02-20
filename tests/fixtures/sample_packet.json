@@ -1,0 +1,63 @@
+{
+  "schema_version": "incident_packet.v1",
+  "incident_id": "inc-test456",
+  "collector_run_id": "run-xyz",
+  "service": "loggen",
+  "environment": "dev",
+  "time_window": {
+    "start": "2026-02-17T23:45:00+00:00",
+    "end": "2026-02-18T00:00:00+00:00"
+  },
+  "snapshot_ref": {
+    "s3_bucket": "test-bucket",
+    "s3_key": "evidence/inc-test456/run-xyz.json",
+    "sha256": "abc123"
+  },
+  "findings": [
+    {
+      "id": "logs-errors-found",
+      "summary": "Found 3 recent error(s) in logs. Top: ERROR RuntimeError: something broke",
+      "confidence": 0.8,
+      "evidence_refs": [
+        {"collector_type": "logs", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-test456/run-xyz/logs.json", "sha256": "aaa111", "byte_size": 500, "truncated": false}
+      ]
+    },
+    {
+      "id": "metrics-collected",
+      "summary": "Collected 4 metric series. Stub mode.",
+      "confidence": 0.4,
+      "evidence_refs": [
+        {"collector_type": "metrics", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-test456/run-xyz/metrics.json", "sha256": "bbb222", "byte_size": 300, "truncated": false}
+      ]
+    }
+  ],
+  "hypotheses": [
+    {
+      "summary": "Application is throwing runtime errors.",
+      "confidence": 0.5,
+      "evidence_refs": []
+    }
+  ],
+  "next_actions": [
+    {
+      "summary": "Inspect full error logs in CloudWatch Logs Insights",
+      "commands": ["fields @timestamp, @message | filter @message like /ERROR/ | sort @timestamp desc | limit 50"],
+      "links": [],
+      "evidence_refs": []
+    }
+  ],
+  "suspected_owners": [
+    {
+      "repo": "opsrunbook-copilot",
+      "confidence": 0.8,
+      "reasons": ["resource 'loggen' matches prefix 'loggen'"]
+    }
+  ],
+  "limits": ["No StepFn evidence available."],
+  "all_evidence_refs": [
+    {"collector_type": "logs", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-test456/run-xyz/logs.json", "sha256": "aaa111", "byte_size": 500, "truncated": false},
+    {"collector_type": "metrics", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-test456/run-xyz/metrics.json", "sha256": "bbb222", "byte_size": 300, "truncated": false}
+  ],
+  "model_trace": {"provider": "stub", "model": null, "prompt_version": "v1", "created_at": "2026-02-18T00:00:00+00:00"},
+  "packet_hashes": {"sha256": "deadbeef"}
+}

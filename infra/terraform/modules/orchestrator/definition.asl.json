@@ -1,0 +1,239 @@
+{
+  "Comment": "OpsRunbook Copilot – parallel evidence collection orchestrator",
+  "StartAt": "CollectEvidence",
+  "States": {
+    "CollectEvidence": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "CollectLogs",
+          "States": {
+            "CollectLogs": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${logs_collector_arn}",
+                "Payload": {
+                  "incident_id.$": "$.incident_id",
+                  "collector_run_id.$": "$.collector_run_id",
+                  "log_groups.$": "$.hints.log_groups",
+                  "time_window.$": "$.time_window",
+                  "evidence_bucket.$": "$.evidence_bucket",
+                  "event_bus_name.$": "$.event_bus_name",
+                  "service.$": "$.service"
+                }
+              },
+              "ResultSelector": {
+                "collector_type.$": "$.Payload.collector_type",
+                "incident_id.$": "$.Payload.incident_id",
+                "collector_run_id.$": "$.Payload.collector_run_id",
+                "skipped.$": "$.Payload.skipped",
+                "evidence_ref.$": "$.Payload.evidence_ref",
+                "error.$": "$.Payload.error",
+                "cause.$": "$.Payload.cause"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error_info",
+                  "Next": "LogsError"
+                }
+              ],
+              "End": true
+            },
+            "LogsError": {
+              "Type": "Pass",
+              "Parameters": {
+                "collector_type": "logs",
+                "incident_id.$": "$.incident_id",
+                "collector_run_id.$": "$.collector_run_id",
+                "skipped": false,
+                "evidence_ref": null,
+                "error.$": "$.error_info.Error",
+                "cause.$": "$.error_info.Cause"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "CollectMetrics",
+          "States": {
+            "CollectMetrics": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${metrics_collector_arn}",
+                "Payload": {
+                  "incident_id.$": "$.incident_id",
+                  "collector_run_id.$": "$.collector_run_id",
+                  "metric_queries.$": "$.hints.metric_queries",
+                  "time_window.$": "$.time_window",
+                  "evidence_bucket.$": "$.evidence_bucket",
+                  "event_bus_name.$": "$.event_bus_name",
+                  "service.$": "$.service"
+                }
+              },
+              "ResultSelector": {
+                "collector_type.$": "$.Payload.collector_type",
+                "incident_id.$": "$.Payload.incident_id",
+                "collector_run_id.$": "$.Payload.collector_run_id",
+                "skipped.$": "$.Payload.skipped",
+                "evidence_ref.$": "$.Payload.evidence_ref",
+                "error.$": "$.Payload.error",
+                "cause.$": "$.Payload.cause"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error_info",
+                  "Next": "MetricsError"
+                }
+              ],
+              "End": true
+            },
+            "MetricsError": {
+              "Type": "Pass",
+              "Parameters": {
+                "collector_type": "metrics",
+                "incident_id.$": "$.incident_id",
+                "collector_run_id.$": "$.collector_run_id",
+                "skipped": false,
+                "evidence_ref": null,
+                "error.$": "$.error_info.Error",
+                "cause.$": "$.error_info.Cause"
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "CollectStepFn",
+          "States": {
+            "CollectStepFn": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${stepfn_collector_arn}",
+                "Payload": {
+                  "incident_id.$": "$.incident_id",
+                  "collector_run_id.$": "$.collector_run_id",
+                  "orchestrator_execution_arn.$": "$$.Execution.Id",
+                  "orchestrator_state_machine_arn.$": "$$.StateMachine.Id",
+                  "state_machine_arns.$": "$.hints.state_machine_arns",
+                  "time_window.$": "$.time_window",
+                  "evidence_bucket.$": "$.evidence_bucket",
+                  "event_bus_name.$": "$.event_bus_name",
+                  "service.$": "$.service"
+                }
+              },
+              "ResultSelector": {
+                "collector_type.$": "$.Payload.collector_type",
+                "incident_id.$": "$.Payload.incident_id",
+                "collector_run_id.$": "$.Payload.collector_run_id",
+                "skipped.$": "$.Payload.skipped",
+                "evidence_ref.$": "$.Payload.evidence_ref",
+                "error.$": "$.Payload.error",
+                "cause.$": "$.Payload.cause"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException",
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.ALL"],
+                  "ResultPath": "$.error_info",
+                  "Next": "StepFnError"
+                }
+              ],
+              "End": true
+            },
+            "StepFnError": {
+              "Type": "Pass",
+              "Parameters": {
+                "collector_type": "stepfn",
+                "incident_id.$": "$.incident_id",
+                "collector_run_id.$": "$.collector_run_id",
+                "skipped": false,
+                "evidence_ref": null,
+                "error.$": "$.error_info.Error",
+                "cause.$": "$.error_info.Cause"
+              },
+              "End": true
+            }
+          }
+        }
+      ],
+      "Next": "AggregateResults"
+    },
+    "AggregateResults": {
+      "Type": "Pass",
+      "Parameters": {
+        "context.$": "$$.Execution.Input",
+        "results.$": "$"
+      },
+      "Next": "PersistSnapshot"
+    },
+    "PersistSnapshot": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${snapshot_persist_arn}",
+        "Payload": {
+          "context.$": "$.context",
+          "results.$": "$.results"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    }
+  }
+}

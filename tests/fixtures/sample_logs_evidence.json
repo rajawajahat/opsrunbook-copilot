@@ -1,0 +1,15 @@
+{
+  "schema": "evidence.v1",
+  "collector_type": "logs",
+  "log_groups": ["/aws/lambda/opsrunbook-copilot-dev-loggen"],
+  "sections": [
+    {
+      "name": "recent_errors",
+      "rows": [
+        { "@timestamp": "2026-02-18T00:00:00Z", "@message": "ERROR RuntimeError: something broke in handler" },
+        { "@timestamp": "2026-02-17T23:59:00Z", "@message": "ERROR Traceback (most recent call last): File handler.py line 42" },
+        { "@timestamp": "2026-02-17T23:58:00Z", "@message": "INFO Lambda cold start" }
+      ]
+    }
+  ]
+}

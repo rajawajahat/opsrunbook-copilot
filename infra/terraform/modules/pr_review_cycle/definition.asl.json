@@ -1,0 +1,182 @@
+{
+  "Comment": "PR Review Cycle – load context, guardrails, plan fix, apply, comment, persist",
+  "StartAt": "LoadPRContext",
+  "States": {
+    "LoadPRContext": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "load_pr_context",
+          "event.$": "$"
+        }
+      },
+      "ResultSelector": {
+        "event.$": "$.Payload.event",
+        "pr_context.$": "$.Payload.pr_context"
+      },
+      "Retry": [{ "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"], "IntervalSeconds": 2, "MaxAttempts": 2, "BackoffRate": 2.0 }],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error_info", "Next": "HandleError" }],
+      "Next": "GuardrailsCheck"
+    },
+
+    "GuardrailsCheck": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "guardrails_check",
+          "event.$": "$.event",
+          "pr_context.$": "$.pr_context"
+        }
+      },
+      "ResultSelector": {
+        "event.$": "$.Payload.event",
+        "pr_context.$": "$.Payload.pr_context",
+        "guardrails.$": "$.Payload.guardrails"
+      },
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error_info", "Next": "HandleError" }],
+      "Next": "CheckGuardrailsResult"
+    },
+
+    "CheckGuardrailsResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.guardrails.proceed",
+          "BooleanEquals": false,
+          "Next": "PersistSkipped"
+        }
+      ],
+      "Default": "BuildReviewPacket"
+    },
+
+    "BuildReviewPacket": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "build_review_packet",
+          "event.$": "$.event",
+          "pr_context.$": "$.pr_context"
+        }
+      },
+      "ResultSelector": {
+        "event.$": "$.Payload.event",
+        "pr_context.$": "$.Payload.pr_context",
+        "review_packet_ref.$": "$.Payload.review_packet_ref"
+      },
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error_info", "Next": "HandleError" }],
+      "Next": "LLMPlanFix"
+    },
+
+    "LLMPlanFix": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "llm_plan_fix",
+          "event.$": "$.event",
+          "pr_context.$": "$.pr_context",
+          "review_packet_ref.$": "$.review_packet_ref"
+        }
+      },
+      "ResultSelector": {
+        "event.$": "$.Payload.event",
+        "pr_context.$": "$.Payload.pr_context",
+        "fix_plan.$": "$.Payload.fix_plan"
+      },
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error_info", "Next": "HandleError" }],
+      "Next": "ApplyFixSafely"
+    },
+
+    "ApplyFixSafely": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "apply_fix_safely",
+          "event.$": "$.event",
+          "pr_context.$": "$.pr_context",
+          "fix_plan.$": "$.fix_plan"
+        }
+      },
+      "ResultSelector": {
+        "event.$": "$.Payload.event",
+        "pr_context.$": "$.Payload.pr_context",
+        "fix_plan.$": "$.Payload.fix_plan",
+        "apply_result.$": "$.Payload.apply_result"
+      },
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error_info", "Next": "HandleError" }],
+      "Next": "PostPRComment"
+    },
+
+    "PostPRComment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "post_pr_comment",
+          "event.$": "$.event",
+          "pr_context.$": "$.pr_context",
+          "fix_plan.$": "$.fix_plan",
+          "apply_result.$": "$.apply_result"
+        }
+      },
+      "ResultSelector": {
+        "event.$": "$.Payload.event",
+        "apply_result.$": "$.Payload.apply_result",
+        "comment_result.$": "$.Payload.comment_result"
+      },
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error_info", "Next": "HandleError" }],
+      "Next": "PersistOutcome"
+    },
+
+    "PersistOutcome": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "persist_outcome",
+          "event.$": "$.event",
+          "apply_result.$": "$.apply_result",
+          "comment_result.$": "$.comment_result"
+        }
+      },
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "ResultPath": "$.error_info", "Next": "HandleError" }],
+      "End": true
+    },
+
+    "PersistSkipped": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${handler_arn}",
+        "Payload": {
+          "step": "persist_outcome",
+          "event.$": "$.event",
+          "apply_result": { "status": "skipped", "reason.$": "$.guardrails.reason" },
+          "comment_result": null
+        }
+      },
+      "End": true
+    },
+
+    "HandleError": {
+      "Type": "Pass",
+      "Parameters": {
+        "status": "error",
+        "error.$": "$.error_info.Error",
+        "cause.$": "$.error_info.Cause"
+      },
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "type": "exact",
+      "signal": "service_name",
+      "pattern": "loggen",
+      "repo": "rajawajahat/opsrunbook-copilot-test"
+    },
+    {
+      "type": "exact",
+      "signal": "service_name",
+      "pattern": "opsrunbook-copilot",
+      "repo": "rajawajahat/opsrunbook-copilot-test"
+    },
+    {
+      "type": "prefix",
+      "signal": "lambda_name",
+      "pattern": "opsrunbook-copilot-dev-",
+      "repo": "rajawajahat/opsrunbook-copilot-test"
+    },
+    {
+      "type": "prefix",
+      "signal": "log_group",
+      "pattern": "/aws/lambda/opsrunbook-copilot-dev-",
+      "repo": "rajawajahat/opsrunbook-copilot-test"
+    }
+  ]
+}

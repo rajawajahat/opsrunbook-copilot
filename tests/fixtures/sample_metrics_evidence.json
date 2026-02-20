@@ -1,0 +1,13 @@
+{
+  "schema": "evidence.v1",
+  "collector_type": "metrics",
+  "sections": [
+    {
+      "name": "lambda_metrics",
+      "series": [
+        { "label": "Invocations Sum", "values": [10, 12, 8], "timestamps": ["2026-02-17T23:45:00Z", "2026-02-17T23:50:00Z", "2026-02-17T23:55:00Z"] },
+        { "label": "Errors Sum", "values": [0, 1, 0], "timestamps": ["2026-02-17T23:45:00Z", "2026-02-17T23:50:00Z", "2026-02-17T23:55:00Z"] }
+      ]
+    }
+  ]
+}
