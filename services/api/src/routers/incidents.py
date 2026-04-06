@@ -81,19 +81,16 @@ def create_incident(event: CreateIncidentRequest):
 
     ddb = DynamoStore(region=settings.aws_region)
 
-    # IDs
     incident_id = event.incident_id or f"inc-{uuid4().hex[:12]}"
     collector_run_id = uuid4().hex
     created_at = datetime.now(timezone.utc).isoformat()
 
-    # Time window (clamp)
     start = _parse_dt(event.time_window.start)
     end = _parse_dt(event.time_window.end)
     start2, end2, clamped = clamp_time_window(
         start=start, end=end, max_minutes=settings.max_time_window_minutes,
     )
 
-    # Store incident metadata
     ddb.put_incident(
         table_name=settings.incidents_table,
         rec=IncidentRecord(
@@ -107,7 +104,7 @@ def create_incident(event: CreateIncidentRequest):
         ),
     )
 
-    # Store run record (sk=RUN#<run_id>)
+    # Written with execution_arn="pending"; updated after SFN responds below.
     ddb.put_run(
         table_name=settings.snapshots_table,
         incident_id=incident_id,
@@ -117,7 +114,6 @@ def create_incident(event: CreateIncidentRequest):
         status="STARTING",
     )
 
-    # Default metric_queries for loggen (minimal MVP)
     metric_queries = [mq.model_dump() for mq in event.hints.metric_queries]
     if not metric_queries and event.service == "loggen":
         fn_name = "opsrunbook-copilot-dev-loggen"
@@ -128,7 +124,6 @@ def create_incident(event: CreateIncidentRequest):
             {"namespace": "AWS/Lambda", "metric_name": "Throttles", "dimensions": {"FunctionName": fn_name}, "period": 300, "stat": "Sum"},
         ]
 
-    # Build SFN input
     sfn_input = {
         "incident_id": incident_id,
         "collector_run_id": collector_run_id,
@@ -147,7 +142,6 @@ def create_incident(event: CreateIncidentRequest):
         "event_bus_name": settings.event_bus_name,
     }
 
-    # Start execution
     sfn = boto3.client("stepfunctions", region_name=settings.aws_region)
     try:
         resp = sfn.start_execution(
@@ -159,7 +153,6 @@ def create_incident(event: CreateIncidentRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to start orchestration: {exc}")
 
-    # Update run record with actual execution_arn
     ddb.put_run(
         table_name=settings.snapshots_table,
         incident_id=incident_id,
@@ -180,7 +173,6 @@ def create_incident(event: CreateIncidentRequest):
     )
 
 
-# ─── GET /v1/incidents/{id}/runs/{run_id} ─────────────────────────
 @router.get("/{incident_id}/runs/{collector_run_id}", response_model=RunStatusResponse)
 def get_run_status(incident_id: str, collector_run_id: str):
     settings = load_settings()
@@ -203,7 +195,6 @@ def get_run_status(incident_id: str, collector_run_id: str):
             status="STARTING",
         )
 
-    # Describe execution from SFN
     sfn = boto3.client("stepfunctions", region_name=settings.aws_region)
     try:
         desc = sfn.describe_execution(executionArn=execution_arn)
@@ -258,7 +249,7 @@ def _parse_evidence_refs(output_json: str) -> list[EvidenceRef]:
     return refs
 
 
-# ─── Legacy / iter-1 endpoints (preserved) ────────────────────────
+# Legacy iter-1 endpoints kept for backward compatibility.
 
 @router.get("/{incident_id}")
 def get_incident_latest(incident_id: str):
@@ -394,15 +385,12 @@ def replay_incident(incident_id: str):
     except Exception:
         raise HTTPException(status_code=404, detail="Packet S3 object not found")
 
-    # Load existing actions
     existing_actions = actions_store.get_latest(incident_id)
     existing_plan = existing_actions.get("action_plan", {}) if existing_actions else {}
 
-    # Re-generate plan from packet (deterministic).
-    # plan_generator lives in infra/terraform/modules/actions_runner/src/.
-    # Set PLAN_GENERATOR_PATH env var to that directory when running locally,
-    # or ensure it is on PYTHONPATH. The replay endpoint gracefully degrades
-    # if the module is not importable.
+    # plan_generator lives alongside the actions_runner Lambda, not as an
+    # installed package. PLAN_GENERATOR_PATH lets callers point at it explicitly;
+    # otherwise we fall back to the relative repo path (works for local dev).
     import sys
     import os
 
