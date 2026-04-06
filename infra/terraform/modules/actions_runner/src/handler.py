@@ -21,7 +21,10 @@ from uuid import uuid4
 
 import boto3
 
-from plan_generator import generate_action_plan, build_teams_body, build_pr_notes, build_pr_body
+from plan_generator import (
+    generate_action_plan, build_teams_body, build_pr_body,
+    generate_action_content_llm,
+)
 from jira_client import JiraClient, DryRunJiraClient
 from teams_notifier import TeamsNotifier, DryRunTeamsNotifier
 from github_client import GitHubClient, DryRunGitHubClient
@@ -37,6 +40,7 @@ EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME", "")
 DRY_RUN = os.environ.get("ACTIONS_DRY_RUN", "true").lower() in ("true", "1", "yes")
 AUTOMATION_ENABLED = os.environ.get("AUTOMATION_ENABLED", "true").lower() in ("true", "1", "yes")
 EVENT_SOURCE = "opsrunbook-copilot"
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "stub")
 
 PR_CONFIDENCE_THRESHOLD = float(os.environ.get("PR_CONFIDENCE_THRESHOLD", "0.7"))
 
@@ -250,6 +254,27 @@ def _emit_event(action_type: str, status: str, incident_id: str, external_refs: 
         _log("event_emit_failed", incident_id, correlation_id, error=str(e)[:300])
 
 
+def _emit_summary_event(incident_id: str, correlation_id: str, statuses: dict, packet_ref: dict):
+    """Emit actions_runner.completed so downstream consumers (e.g. coding agent) can trigger."""
+    if not EVENT_BUS_NAME:
+        return
+    try:
+        events_client.put_events(Entries=[{
+            "Source": EVENT_SOURCE,
+            "DetailType": "actions_runner.completed",
+            "Detail": json.dumps({
+                "incident_id": incident_id,
+                "correlation_id": correlation_id,
+                "statuses": statuses,
+                "packet_ref": packet_ref,
+                "emitted_at": _now_iso(),
+            }, default=str),
+            "EventBusName": EVENT_BUS_NAME,
+        }])
+    except Exception as e:
+        _log("summary_event_emit_failed", incident_id, correlation_id, error=str(e)[:300])
+
+
 # ── Main handler ─────────────────────────────────────────────────
 
 def lambda_handler(event: dict, context: Any) -> dict:
@@ -281,6 +306,13 @@ def lambda_handler(event: dict, context: Any) -> dict:
 
     plan = generate_action_plan(packet, dry_run=DRY_RUN)
 
+    # Single LLM call for both Jira description and PR body
+    llm_content: dict | None = None
+    if LLM_PROVIDER != "stub":
+        llm_content = generate_action_content_llm(packet)
+        if llm_content:
+            _log("llm_content_ok", incident_id, correlation_id)
+
     table = dynamodb.Table(INCIDENTS_TABLE)
     plan_sk = _persist_action_plan(table, incident_id, plan)
     action_sks: list[str] = []
@@ -292,7 +324,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
         _log("jira_idempotent_skip", incident_id, correlation_id)
         jira_result = existing_jira
     else:
-        jira_result = _execute_jira(plan, packet, incident_id, correlation_id)
+        jira_result = _execute_jira(plan, packet, incident_id, correlation_id, llm_content)
         sk = _persist_action_result(table, incident_id, jira_result)
         action_sks.append(sk)
         _emit_event("create_jira_ticket", jira_result["status"], incident_id,
@@ -321,7 +353,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
             gh_result = existing_pr
         else:
             gh_result = _execute_github_pr(plan, packet, jira_result.get("external_refs", {}),
-                                           incident_id, correlation_id)
+                                           incident_id, correlation_id, llm_content)
             sk = _persist_action_result(table, incident_id, gh_result)
             action_sks.append(sk)
             _emit_event("create_github_pr", gh_result["status"], incident_id,
@@ -333,12 +365,15 @@ def lambda_handler(event: dict, context: Any) -> dict:
     statuses = {r["action_type"]: r["status"] for r in results}
     _log("actions_runner_done", incident_id, correlation_id, statuses=statuses)
 
+    _emit_summary_event(incident_id, correlation_id, statuses, packet_ref)
+
     return {"ok": True, "incident_id": incident_id, "results": [r["status"] for r in results]}
 
 
 # ── Action executors ─────────────────────────────────────────────
 
-def _execute_jira(plan: dict, packet: dict, incident_id: str, correlation_id: str) -> dict:
+def _execute_jira(plan: dict, packet: dict, incident_id: str, correlation_id: str,
+                  llm_content: dict | None = None) -> dict:
     jira_action = next((a for a in plan.get("actions", []) if a["action_type"] == "create_jira_ticket"), None)
     if not jira_action:
         return _skipped_result("create_jira_ticket", "no jira action in plan", incident_id=incident_id)
@@ -353,10 +388,14 @@ def _execute_jira(plan: dict, packet: dict, incident_id: str, correlation_id: st
         if client is None:
             return _skipped_result("create_jira_ticket", "jira_not_configured", action_id, created_at, incident_id)
 
+    description = jira_action.get("description_md", "")
+    if llm_content and llm_content.get("jira_description"):
+        description = llm_content["jira_description"]
+
     try:
         resp = client.create_issue(
             summary=jira_action["title"],
-            description=jira_action.get("description_md", ""),
+            description=description,
             priority=jira_action.get("priority", "P2"),
             labels=["opsrunbook-copilot", "auto-generated"],
         )
@@ -452,7 +491,8 @@ def _execute_teams(plan: dict, packet: dict, jira_refs: dict, incident_id: str, 
 
 
 def _execute_github_pr(plan: dict, packet: dict, jira_refs: dict,
-                       incident_id: str, correlation_id: str) -> dict:
+                       incident_id: str, correlation_id: str,
+                       llm_content: dict | None = None) -> dict:
     gh_action = next((a for a in plan.get("actions", []) if a["action_type"] == "create_github_pr"), None)
     if not gh_action:
         return _skipped_result("create_github_pr", "no github_pr action in plan", incident_id=incident_id)
@@ -532,9 +572,15 @@ def _execute_github_pr(plan: dict, packet: dict, jira_refs: dict,
     environment = packet.get("environment", "dev")
     pr_title = f"{jira_key} [{environment}] {service}: incident {incident_id} – initial analysis"
 
-    file_path = f".opsrunbook/pr-notes/{jira_key}.md"
-    file_content = build_pr_notes(packet, {"jira_issue_key": jira_key, "jira_url": jira_url})
+    file_path = f".opsrunbook/analysis/{jira_key}.md"
+    jira_ref_for_llm = {"jira_issue_key": jira_key, "jira_url": jira_url}
+
+    file_content = build_pr_body(packet, jira_ref_for_llm)
     pr_body_text = _build_deterministic_pr_body(packet, jira_key, jira_url, resolution)
+
+    if llm_content and llm_content.get("pr_body"):
+        pr_body_text = llm_content["pr_body"]
+
     commit_msg = f"{jira_key}: add incident analysis notes for {incident_id}"
 
     try:

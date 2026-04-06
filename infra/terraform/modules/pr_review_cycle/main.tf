@@ -14,12 +14,17 @@ terraform {
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
+locals {
+  llm_client_src = "${path.module}/../../../../packages/llm/llm_client.py"
+}
+
 # ── Build: pip install deps ──────────────────────────────────────
 
 resource "null_resource" "pip_install" {
   triggers = {
     requirements = filemd5("${path.module}/requirements.txt")
     src_hash     = sha256(join("", [for f in fileset("${path.module}/src", "**") : filemd5("${path.module}/src/${f}")]))
+    llm_client   = filemd5(local.llm_client_src)
   }
 
   provisioner "local-exec" {
@@ -27,6 +32,7 @@ resource "null_resource" "pip_install" {
       rm -rf ${path.module}/build
       mkdir -p ${path.module}/build
       cp ${path.module}/src/*.py ${path.module}/build/
+      cp "${local.llm_client_src}" "${path.module}/build/llm_client.py"
       pip install -r ${path.module}/requirements.txt \
         --target ${path.module}/build \
         --platform manylinux2014_x86_64 \
@@ -69,6 +75,8 @@ resource "aws_lambda_function" "pr_review_handler" {
       GITHUB_APP_SLUG           = var.github_app_slug
       GITHUB_ALLOWED_PATHS      = var.github_allowed_paths
       LLM_PROVIDER              = var.llm_provider
+      SSM_GROQ_API_KEY          = "/opsrunbook/dev/groq/api_key"
+      SSM_GOOGLE_API_KEY        = "/opsrunbook/dev/google/api_key"
       SSM_GITHUB_TOKEN          = "/opsrunbook/dev/github/token"
       SSM_GITHUB_APP_ID         = "/opsrunbook/dev/github/app_id"
       SSM_GITHUB_APP_INSTALL_ID = "/opsrunbook/dev/github/app_installation_id"

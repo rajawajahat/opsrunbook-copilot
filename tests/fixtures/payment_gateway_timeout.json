@@ -1,0 +1,69 @@
+{
+  "schema_version": "incident_packet.v1",
+  "incident_id": "inc-pay-timeout-001",
+  "collector_run_id": "run-agent-test-001",
+  "service": "opsrunbook-test",
+  "environment": "dev",
+  "time_window": {
+    "start": "2026-02-26T09:00:00+00:00",
+    "end": "2026-02-26T09:15:00+00:00"
+  },
+  "findings": [
+    {
+      "id": "payment-gateway-timeout",
+      "summary": "PaymentGatewayTimeoutError in payment_processor Lambda. Traceback: File \"src/payment_processor/handler.py\", line 73, in _process_batch: _charge_payment(txn[\"transaction_id\"], txn[\"amount\"], txn[\"currency\"]). File \"src/payment_processor/handler.py\", line 65, in _charge_payment: return _gateway_client_post(...). File \"src/payment_processor/handler.py\", line 57, in _gateway_client_post: raise PaymentGatewayTimeoutError(\"Gateway timeout after 30000ms — upstream payment provider api.stripe-mock.example.com not responding\")",
+      "confidence": 0.95,
+      "evidence_refs": [
+        {"collector_type": "logs", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-pay-timeout-001/logs.json", "sha256": "aaa111", "byte_size": 2400, "truncated": false}
+      ]
+    },
+    {
+      "id": "error-rate-spike",
+      "summary": "Error rate for payment_processor spiked to 100% at 09:05 UTC. 3 of 10 transactions succeeded before failure.",
+      "confidence": 0.85,
+      "evidence_refs": [
+        {"collector_type": "metrics", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-pay-timeout-001/metrics.json", "sha256": "bbb222", "byte_size": 800, "truncated": false}
+      ]
+    }
+  ],
+  "hypotheses": [
+    {
+      "summary": "The payment gateway (api.stripe-mock.example.com) is timing out after 30s. The _process_batch function has no error handling for individual transaction failures, causing the entire batch to abort when one gateway call fails.",
+      "confidence": 0.85,
+      "evidence_refs": []
+    },
+    {
+      "summary": "CHAOS_MODE environment variable may be enabled, triggering intentional failure on the 4th transaction in _process_batch.",
+      "confidence": 0.6,
+      "evidence_refs": []
+    }
+  ],
+  "next_actions": [
+    {
+      "summary": "Add try/except around _charge_payment calls in _process_batch to handle individual transaction failures gracefully",
+      "commands": [],
+      "links": [],
+      "evidence_refs": []
+    },
+    {
+      "summary": "Add retry logic with exponential backoff in _gateway_client_post for transient gateway timeouts",
+      "commands": [],
+      "links": [],
+      "evidence_refs": []
+    }
+  ],
+  "suspected_owners": [
+    {
+      "repo": "opsrunbook-copilot-test",
+      "confidence": 0.95,
+      "reasons": ["service 'opsrunbook-test' maps to repo", "stack trace references src/payment_processor/handler.py"]
+    }
+  ],
+  "limits": [],
+  "all_evidence_refs": [
+    {"collector_type": "logs", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-pay-timeout-001/logs.json", "sha256": "aaa111", "byte_size": 2400, "truncated": false},
+    {"collector_type": "metrics", "s3_bucket": "test-bucket", "s3_key": "evidence/inc-pay-timeout-001/metrics.json", "sha256": "bbb222", "byte_size": 800, "truncated": false}
+  ],
+  "model_trace": {"provider": "groq", "model": "llama-3.3-70b-versatile", "prompt_version": "v1", "created_at": "2026-02-26T09:10:00+00:00"},
+  "packet_hashes": {"sha256": "test-packet-hash"}
+}

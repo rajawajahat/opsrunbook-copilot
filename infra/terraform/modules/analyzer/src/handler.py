@@ -1,9 +1,9 @@
 """
-Analyzer Lambda – Iteration 3.
+Analyzer Lambda – Iteration 3 + LLM integration.
 
 Triggered by EventBridge event: evidence.snapshot.persisted
 Loads evidence snapshot manifest + collector evidence objects from S3,
-runs stub analysis, produces IncidentPacketV1, persists to S3 + DynamoDB,
+runs analysis (LLM or stub), produces IncidentPacketV1, persists to S3 + DynamoDB,
 emits incident.analyzed event.
 """
 import hashlib
@@ -19,9 +19,11 @@ dynamodb = boto3.resource("dynamodb")
 events_client = boto3.client("events")
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "stub")
+LLM_MODEL = os.environ.get("LLM_MODEL", "")
 PACKETS_TABLE = os.environ["PACKETS_TABLE"]
 EVENT_BUS_NAME = os.environ.get("EVENT_BUS_NAME", "")
 EVENT_SOURCE = "opsrunbook-copilot"
+MAX_EVIDENCE_CHARS = 80_000
 
 RESOURCE_REPO_MAP: dict[str, str] = {}
 try:
@@ -182,6 +184,203 @@ def _analyze_stepfn(evidence: dict, eref: dict) -> tuple[list[dict], list[dict],
 
 
 # ---------------------------------------------------------------------------
+# LLM-powered analysis
+# ---------------------------------------------------------------------------
+
+ANALYSIS_SYSTEM_PROMPT = """\
+You are a senior SRE analyst. You are given evidence collected from an AWS incident \
+(logs, metrics, Step Functions execution data). Analyze the evidence and produce:
+
+1. **findings**: concrete observations from the evidence (each with a confidence 0.0-1.0).
+2. **hypotheses**: plausible root causes or contributing factors.
+3. **next_actions**: actionable steps the on-call engineer should take next \
+   (include specific AWS CLI commands or console links where possible).
+4. **limits**: anything you could NOT determine from the evidence provided.
+
+Be specific and concise. Reference actual error messages, metric names, and resource names \
+from the evidence. Do not invent data that is not in the evidence."""
+
+
+def _truncate_evidence(text: str, max_chars: int = MAX_EVIDENCE_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n... [truncated to fit context budget]"
+
+
+def _format_evidence_for_prompt(
+    evidence_objects: dict[str, dict],
+    manifest: dict,
+) -> str:
+    parts = [
+        f"Service: {manifest.get('service', 'unknown')}",
+        f"Environment: {manifest.get('environment', 'unknown')}",
+        f"Time window: {json.dumps(manifest.get('time_window', {}))}\n",
+    ]
+
+    if "logs" in evidence_objects:
+        logs = evidence_objects["logs"]
+        parts.append("## Log Evidence")
+        for sec in logs.get("sections", []):
+            parts.append(f"### {sec.get('name', 'unknown')}")
+            for row in sec.get("rows", [])[:20]:
+                msg = row.get("@message", "")
+                ts = row.get("@timestamp", "")
+                if msg:
+                    parts.append(f"  [{ts}] {msg[:500]}")
+            cnt = row.get("cnt") if sec.get("rows") else None
+            if cnt:
+                parts.append(f"  (count: {cnt})")
+        parts.append("")
+
+    if "metrics" in evidence_objects:
+        metrics = evidence_objects["metrics"]
+        all_series = metrics.get("series", [])
+        for sec in metrics.get("sections", []):
+            all_series.extend(sec.get("series", []))
+        parts.append("## Metric Evidence")
+        for s in all_series[:15]:
+            summary = s.get("summary", {})
+            parts.append(
+                f"  {s.get('label', '?')} (stat={s.get('stat', '?')}, "
+                f"period={s.get('period', '?')}s): "
+                f"min={summary.get('min')}, max={summary.get('max')}, "
+                f"avg={summary.get('avg')}, count={summary.get('count')}"
+            )
+        parts.append("")
+
+    if "stepfn" in evidence_objects:
+        sfn = evidence_objects["stepfn"]
+        parts.append("## Step Functions Evidence")
+        for sec in sfn.get("sections", []):
+            if sec.get("name") == "orchestrator_execution":
+                parts.append(f"  Orchestrator status: {sec.get('status')}")
+                if sec.get("error"):
+                    parts.append(f"  Error: {str(sec.get('error'))[:500]}")
+                if sec.get("cause"):
+                    parts.append(f"  Cause: {str(sec.get('cause'))[:500]}")
+                if sec.get("last_failed_state"):
+                    parts.append(f"  Last failed state: {sec['last_failed_state']}")
+            if sec.get("name") == "failed_executions":
+                execs = sec.get("executions", [])
+                parts.append(f"  Failed executions found: {len(execs)}")
+                for ex in execs[:5]:
+                    parts.append(
+                        f"    - {ex.get('name', '?')} status={ex.get('status', '?')} "
+                        f"error={str(ex.get('error', ''))[:200]}"
+                    )
+        parts.append("")
+
+    return _truncate_evidence("\n".join(parts))
+
+
+def _analyze_with_llm(
+    evidence_objects: dict[str, dict],
+    manifest: dict,
+    all_evidence_refs: list[dict],
+) -> tuple[list[dict], list[dict], list[dict], list[str], dict]:
+    """
+    Call the LLM to analyze evidence. Returns (findings, hypotheses, next_actions, limits, model_trace).
+    Falls back to stub on any failure.
+    """
+    from pydantic import BaseModel, Field
+
+    class Finding(BaseModel):
+        id: str = Field(description="Short identifier e.g. 'logs-timeout-errors'")
+        summary: str = Field(description="One-sentence description of the finding")
+        confidence: float = Field(ge=0.0, le=1.0, description="Confidence 0.0-1.0")
+
+    class Hypothesis(BaseModel):
+        summary: str = Field(description="Plausible root cause or contributing factor")
+        confidence: float = Field(ge=0.0, le=1.0)
+
+    class NextAction(BaseModel):
+        summary: str = Field(description="What the engineer should do")
+        commands: list[str] = Field(default_factory=list, description="AWS CLI commands or queries")
+        links: list[str] = Field(default_factory=list, description="Console URLs")
+
+    class AnalysisResult(BaseModel):
+        findings: list[Finding] = Field(default_factory=list)
+        hypotheses: list[Hypothesis] = Field(default_factory=list)
+        next_actions: list[NextAction] = Field(default_factory=list)
+        limits: list[str] = Field(default_factory=list)
+
+    from llm_client import get_llm
+    llm = get_llm(provider=LLM_PROVIDER, model=LLM_MODEL or None)
+    if llm is None:
+        return None, None, None, None, {"provider": "stub", "model": None}
+
+    evidence_text = _format_evidence_for_prompt(evidence_objects, manifest)
+    user_prompt = f"Analyze this incident evidence:\n\n{evidence_text}"
+
+    print(json.dumps({
+        "msg": "llm_request",
+        "step": "analyzer",
+        "provider": LLM_PROVIDER,
+        "system_prompt": ANALYSIS_SYSTEM_PROMPT[:500],
+        "user_prompt": user_prompt[:2000],
+        "user_prompt_length": len(user_prompt),
+    }))
+
+    from langchain_core.messages import SystemMessage, HumanMessage
+    structured_llm = llm.with_structured_output(AnalysisResult)
+
+    try:
+        result: AnalysisResult = structured_llm.invoke([
+            SystemMessage(content=ANALYSIS_SYSTEM_PROMPT),
+            HumanMessage(content=user_prompt),
+        ])
+    except Exception as e:
+        print(json.dumps({"msg": "llm_analysis_failed", "error": str(e)[:500]}))
+        return None, None, None, None, {"provider": LLM_PROVIDER, "model": LLM_MODEL}
+
+    print(json.dumps({
+        "msg": "llm_response",
+        "step": "analyzer",
+        "findings": len(result.findings),
+        "hypotheses": len(result.hypotheses),
+        "next_actions": len(result.next_actions),
+        "limits": len(result.limits),
+        "response_preview": result.model_dump_json()[:2000],
+    }))
+
+    ref_by_type = {r.get("collector_type"): r for r in all_evidence_refs}
+    default_ref = all_evidence_refs[0] if all_evidence_refs else {}
+
+    findings = [
+        {
+            "id": f.id,
+            "summary": f.summary,
+            "confidence": f.confidence,
+            "evidence_refs": [default_ref] if default_ref else [],
+        }
+        for f in result.findings
+    ]
+    hypotheses = [
+        {
+            "summary": h.summary,
+            "confidence": h.confidence,
+            "evidence_refs": [default_ref] if default_ref else [],
+        }
+        for h in result.hypotheses
+    ]
+    next_actions = [
+        {
+            "summary": a.summary,
+            "commands": a.commands,
+            "links": a.links,
+            "evidence_refs": [default_ref] if default_ref else [],
+        }
+        for a in result.next_actions
+    ]
+
+    model_trace = {
+        "provider": LLM_PROVIDER,
+        "model": LLM_MODEL,
+    }
+    return findings, hypotheses, next_actions, result.limits, model_trace
+
+
+# ---------------------------------------------------------------------------
 # Repo candidates resolver
 # ---------------------------------------------------------------------------
 
@@ -289,32 +488,48 @@ def lambda_handler(event: dict, context: Any) -> dict:
             except Exception as e:
                 print(json.dumps({"msg": "evidence_load_error", "collector_type": ctype, "error": str(e)[:300]}))
 
-    # Run stub analysis
+    # Run analysis — LLM or stub fallback
     findings, hypotheses, next_actions, limits = [], [], [], []
+    model_trace_extra: dict = {"provider": "stub", "model": None}
 
-    if "logs" in evidence_objects:
-        logs_eref = next((r for r in all_evidence_refs if r.get("collector_type") == "logs"), None)
-        if logs_eref:
-            f, h, a, l = _analyze_logs(evidence_objects["logs"], logs_eref)
-            findings.extend(f); hypotheses.extend(h); next_actions.extend(a); limits.extend(l)
-    else:
-        limits.append("Logs collector evidence not available or skipped.")
+    used_llm = False
+    if LLM_PROVIDER != "stub":
+        try:
+            llm_f, llm_h, llm_a, llm_l, mt = _analyze_with_llm(
+                evidence_objects, manifest, all_evidence_refs,
+            )
+            if llm_f is not None:
+                findings, hypotheses, next_actions, limits = llm_f, llm_h, llm_a, llm_l
+                model_trace_extra = mt
+                used_llm = True
+                print(json.dumps({"msg": "llm_analysis_ok", "incident_id": incident_id}))
+        except Exception as e:
+            print(json.dumps({"msg": "llm_analysis_exception", "error": str(e)[:500]}))
 
-    if "metrics" in evidence_objects:
-        met_eref = next((r for r in all_evidence_refs if r.get("collector_type") == "metrics"), None)
-        if met_eref:
-            f, h, a, l = _analyze_metrics(evidence_objects["metrics"], met_eref)
-            findings.extend(f); hypotheses.extend(h); next_actions.extend(a); limits.extend(l)
-    else:
-        limits.append("Metrics collector evidence not available or skipped.")
+    if not used_llm:
+        if "logs" in evidence_objects:
+            logs_eref = next((r for r in all_evidence_refs if r.get("collector_type") == "logs"), None)
+            if logs_eref:
+                f, h, a, l = _analyze_logs(evidence_objects["logs"], logs_eref)
+                findings.extend(f); hypotheses.extend(h); next_actions.extend(a); limits.extend(l)
+        else:
+            limits.append("Logs collector evidence not available or skipped.")
 
-    if "stepfn" in evidence_objects:
-        sfn_eref = next((r for r in all_evidence_refs if r.get("collector_type") == "stepfn"), None)
-        if sfn_eref:
-            f, h, a, l = _analyze_stepfn(evidence_objects["stepfn"], sfn_eref)
-            findings.extend(f); hypotheses.extend(h); next_actions.extend(a); limits.extend(l)
-    else:
-        limits.append("Step Functions collector evidence not available or skipped.")
+        if "metrics" in evidence_objects:
+            met_eref = next((r for r in all_evidence_refs if r.get("collector_type") == "metrics"), None)
+            if met_eref:
+                f, h, a, l = _analyze_metrics(evidence_objects["metrics"], met_eref)
+                findings.extend(f); hypotheses.extend(h); next_actions.extend(a); limits.extend(l)
+        else:
+            limits.append("Metrics collector evidence not available or skipped.")
+
+        if "stepfn" in evidence_objects:
+            sfn_eref = next((r for r in all_evidence_refs if r.get("collector_type") == "stepfn"), None)
+            if sfn_eref:
+                f, h, a, l = _analyze_stepfn(evidence_objects["stepfn"], sfn_eref)
+                findings.extend(f); hypotheses.extend(h); next_actions.extend(a); limits.extend(l)
+        else:
+            limits.append("Step Functions collector evidence not available or skipped.")
 
     # Repo candidates
     suspected_owners = _resolve_repo_candidates(manifest, evidence_objects)
@@ -339,8 +554,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
         "suspected_owners": suspected_owners,
         "limits": limits,
         "model_trace": {
-            "provider": LLM_PROVIDER,
-            "model": None,
+            **model_trace_extra,
             "prompt_version": "v1",
             "created_at": created_at,
         },

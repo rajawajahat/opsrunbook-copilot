@@ -52,3 +52,8 @@ variable "github_default_branch" {
   type    = string
   default = "main"
 }
+
+variable "llm_provider" {
+  type    = string
+  default = "stub"
+}

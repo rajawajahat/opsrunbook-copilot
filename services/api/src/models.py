@@ -1,8 +1,5 @@
 """
-API-layer request/response models for Iteration 2.
-
-Extends the v1 contract with optional hints for metrics and Step Functions
-while keeping packages/contracts/ untouched.
+API-layer request/response models.
 """
 from __future__ import annotations
 

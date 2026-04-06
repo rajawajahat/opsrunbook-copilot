@@ -169,6 +169,9 @@ module "analyzer" {
   packets_table_arn   = module.storage.packets_table_arn
   event_bus_name      = aws_cloudwatch_event_bus.copilot.name
   event_bus_arn       = aws_cloudwatch_event_bus.copilot.arn
+  llm_provider        = "groq"
+  aws_region          = var.aws_region
+  account_id          = local.account_id
 }
 
 output "analyzer_lambda_arn" { value = module.analyzer.lambda_arn }
@@ -192,9 +195,33 @@ module "actions_runner" {
   enable_github_pr      = true
   github_owner          = "rajawajahat"
   github_default_branch = "main"
+  llm_provider          = "groq"
 }
 
 output "actions_runner_arn" { value = module.actions_runner.lambda_arn }
+
+# ──────────────────────────────────────────────────────────────────
+# Coding Agent Lambda — auto-fix via LLM agent after Actions Runner
+# ──────────────────────────────────────────────────────────────────
+module "coding_agent" {
+  source = "../../modules/coding_agent"
+
+  name                 = "${local.prefix}-coding-agent"
+  evidence_bucket      = module.storage.evidence_bucket
+  evidence_bucket_arn  = module.storage.evidence_bucket_arn
+  packets_table_name   = module.storage.packets_table
+  packets_table_arn    = module.storage.packets_table_arn
+  incidents_table_name = module.storage.incidents_table
+  incidents_table_arn  = module.storage.incidents_table_arn
+  event_bus_name       = aws_cloudwatch_event_bus.copilot.name
+  event_bus_arn        = aws_cloudwatch_event_bus.copilot.arn
+  github_owner         = "rajawajahat"
+  llm_provider         = "groq"
+  aws_region           = var.aws_region
+  account_id           = local.account_id
+}
+
+output "coding_agent_arn" { value = module.coding_agent.lambda_arn }
 
 # ──────────────────────────────────────────────────────────────────
 # PR Review Cycle (Iteration 6)
@@ -211,15 +238,110 @@ module "pr_review_cycle" {
   event_bus_arn       = aws_cloudwatch_event_bus.copilot.arn
   github_owner        = "rajawajahat"
   github_app_slug     = "opsrunbook-copilot-bot"
-  llm_provider        = "stub"
+  llm_provider        = "groq"
 }
 
 output "pr_review_state_machine_arn" { value = module.pr_review_cycle.state_machine_arn }
 output "pr_review_lambda_arn" { value = module.pr_review_cycle.lambda_function_arn }
 
+# Google API key for Gemini LLM (placeholder – set value manually)
+resource "aws_ssm_parameter" "google_api_key" {
+  name  = "/opsrunbook/dev/google/api_key"
+  type  = "SecureString"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Groq API key for Llama LLM (placeholder – set value manually)
+resource "aws_ssm_parameter" "groq_api_key" {
+  name  = "/opsrunbook/dev/groq/api_key"
+  type  = "SecureString"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # GitHub webhook secret SSM parameter (placeholder – set value manually)
 resource "aws_ssm_parameter" "github_webhook_secret" {
   name  = "/opsrunbook/dev/github/webhook_secret"
+  type  = "SecureString"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# GitHub PAT for actions_runner and coding_agent (placeholder – set value manually)
+resource "aws_ssm_parameter" "github_token" {
+  name  = "/opsrunbook/dev/github/token"
+  type  = "SecureString"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Jira credentials (placeholders – set values manually)
+resource "aws_ssm_parameter" "jira_base_url" {
+  name  = "/opsrunbook/dev/jira/base_url"
+  type  = "String"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "jira_email" {
+  name  = "/opsrunbook/dev/jira/email"
+  type  = "String"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "jira_api_token" {
+  name  = "/opsrunbook/dev/jira/api_token"
+  type  = "SecureString"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "jira_project_key" {
+  name  = "/opsrunbook/dev/jira/project_key"
+  type  = "String"
+  value = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_ssm_parameter" "jira_issue_type" {
+  name  = "/opsrunbook/dev/jira/issue_type"
+  type  = "String"
+  value = "Bug"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Teams webhook URL (placeholder – set value manually)
+resource "aws_ssm_parameter" "teams_webhook_url" {
+  name  = "/opsrunbook/dev/teams/webhook_url"
   type  = "SecureString"
   value = "REPLACE_ME"
 

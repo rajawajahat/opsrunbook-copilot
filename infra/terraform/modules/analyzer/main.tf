@@ -8,13 +8,51 @@ terraform {
       source  = "hashicorp/archive"
       version = ">= 2.4"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.0"
+    }
+  }
+}
+
+locals {
+  llm_client_src = "${path.module}/../../../../packages/llm/llm_client.py"
+}
+
+resource "null_resource" "pip_install" {
+  triggers = {
+    requirements = filesha256("${path.module}/src/requirements.txt")
+    src_hash     = sha256(join(",", [for f in fileset("${path.module}/src", "**/*.py") : filesha256("${path.module}/src/${f}")]))
+    llm_client   = filesha256(local.llm_client_src)
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -e
+      rm -rf "${path.module}/build"
+      mkdir -p "${path.module}/build"
+      cp "${path.module}/src/"*.py "${path.module}/build/"
+      cp "${path.module}/src/"*.json "${path.module}/build/" 2>/dev/null || true
+      cp "${local.llm_client_src}" "${path.module}/build/llm_client.py"
+      pip install -r "${path.module}/src/requirements.txt" \
+        -t "${path.module}/build" \
+        --platform manylinux2014_x86_64 \
+        --implementation cp \
+        --python-version 3.12 \
+        --only-binary :all: \
+        --quiet 2>/dev/null || \
+      pip install -r "${path.module}/src/requirements.txt" \
+        -t "${path.module}/build" \
+        --upgrade --quiet
+    EOT
   }
 }
 
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/src"
+  source_dir  = "${path.module}/build"
   output_path = "${path.module}/dist/analyzer.zip"
+  depends_on  = [null_resource.pip_install]
 }
 
 # ──────────────────────────────────────────────────────────────────
@@ -67,6 +105,21 @@ resource "aws_iam_role_policy" "analyzer_policy" {
         ]
         Resource = var.packets_table_arn
       },
+      {
+        Sid    = "SSMRead"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/opsrunbook/dev/*"
+      },
+      {
+        Sid      = "KMSDecrypt"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = "arn:aws:kms:${var.aws_region}:${var.account_id}:key/alias/aws/ssm"
+      },
     ]
   })
 }
@@ -98,14 +151,16 @@ resource "aws_lambda_function" "analyzer" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-  timeout     = 60
+  timeout     = 120
   memory_size = 256
 
   environment {
     variables = {
-      PACKETS_TABLE  = var.packets_table_name
-      EVENT_BUS_NAME = var.event_bus_name
-      LLM_PROVIDER   = var.llm_provider
+      PACKETS_TABLE      = var.packets_table_name
+      EVENT_BUS_NAME     = var.event_bus_name
+      LLM_PROVIDER       = var.llm_provider
+      SSM_GROQ_API_KEY   = "/opsrunbook/dev/groq/api_key"
+      SSM_GOOGLE_API_KEY = "/opsrunbook/dev/google/api_key"
     }
   }
 }

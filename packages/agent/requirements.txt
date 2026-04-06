@@ -1,0 +1,6 @@
+langchain-core>=0.3
+langchain-groq>=0.3
+langgraph>=0.2
+pydantic>=2.0
+requests>=2.31
+boto3>=1.34

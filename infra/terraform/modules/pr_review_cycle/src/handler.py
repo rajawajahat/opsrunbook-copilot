@@ -253,6 +253,9 @@ def _step_build_review_packet(payload: dict) -> dict:
     }
 
 
+LLM_MODEL = os.environ.get("LLM_MODEL", "")
+
+
 def _step_llm_plan_fix(payload: dict) -> dict:
     """Generate a fix plan using code context fetched in LoadPRContext."""
     event = payload["event"]
@@ -263,9 +266,119 @@ def _step_llm_plan_fix(payload: dict) -> dict:
     if LLM_PROVIDER == "stub":
         plan = _stub_plan_fix(event, pr_ctx, comment, code_contexts)
     else:
-        plan = _stub_plan_fix(event, pr_ctx, comment, code_contexts)
+        plan = _llm_plan_fix(event, pr_ctx, comment, code_contexts)
+        if plan is None:
+            print(json.dumps({"msg": "llm_plan_fix_fallback_to_stub"}))
+            plan = _stub_plan_fix(event, pr_ctx, comment, code_contexts)
 
     return {"event": event, "pr_context": pr_ctx, "fix_plan": plan}
+
+
+def _llm_plan_fix(
+    event: dict,
+    pr_ctx: dict,
+    comment: str,
+    code_contexts: list[dict],
+) -> dict | None:
+    """Use LLM to generate a fix plan from the review comment and code context."""
+    try:
+        from pydantic import BaseModel, Field
+    except ImportError:
+        return None
+
+    class ProposedEdit(BaseModel):
+        file_path: str
+        change_type: str = Field(default="edit", description="edit, add, or delete")
+        patch: str = Field(default="", description="Unified diff patch if possible")
+        instructions: str = Field(description="Human-readable instruction for the change")
+        rationale: str = Field(description="Why this change addresses the review comment")
+        target_line: int = Field(default=0, description="Primary line number to change")
+
+    class FixPlan(BaseModel):
+        summary: str = Field(description="One-sentence summary of the fix")
+        proposed_edits: list[ProposedEdit] = Field(default_factory=list)
+        risk_level: str = Field(description="low, medium, or high")
+        requires_human: bool = Field(description="True if human review is needed before applying")
+
+    try:
+        from llm_client import get_llm
+        llm = get_llm(provider=LLM_PROVIDER, model=LLM_MODEL or None)
+        if llm is None:
+            return None
+    except Exception:
+        return None
+
+    context_parts = [f"Review comment: {comment[:1000]}"]
+    context_parts.append(f"PR title: {pr_ctx.get('title', '')}")
+    context_parts.append(f"PR body: {pr_ctx.get('body', '')[:500]}")
+
+    for ctx in code_contexts[:5]:
+        context_parts.append(
+            f"\n--- File: {ctx['path']} (lines {ctx['start_line']}-{ctx['end_line']}) ---\n"
+            f"{ctx.get('snippet', '')[:2000]}"
+        )
+
+    user_prompt = "\n".join(context_parts)
+
+    system_prompt = (
+        "You are a senior software engineer fixing code based on a PR review comment. "
+        "Analyze the review comment and the code context provided. Generate a fix plan with:\n"
+        "1. A concise summary of what needs to change.\n"
+        "2. Proposed edits: for each file, provide the file_path, target_line, instructions, "
+        "rationale, and if possible a unified diff patch.\n"
+        "3. A risk_level (low/medium/high) based on how confident you are in the fix.\n"
+        "4. requires_human: set to false only if the fix is straightforward and low-risk.\n\n"
+        "If the review comment is vague or you cannot determine a concrete fix, "
+        "set risk_level to 'high' and requires_human to true."
+    )
+
+    from langchain_core.messages import SystemMessage, HumanMessage
+    structured_llm = llm.with_structured_output(FixPlan)
+
+    try:
+        result: FixPlan = structured_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ])
+    except Exception as e:
+        print(json.dumps({"msg": "llm_plan_fix_failed", "error": str(e)[:500]}))
+        return None
+
+    delivery_id = event.get("delivery_id", "")
+    proposed_edits = []
+    for edit in result.proposed_edits:
+        ed = {
+            "file_path": edit.file_path,
+            "change_type": edit.change_type,
+            "patch": edit.patch,
+            "instructions": edit.instructions,
+            "rationale": edit.rationale,
+            "target_line": edit.target_line,
+            "line_range": [max(1, edit.target_line - 20), edit.target_line + 20],
+        }
+        matching_ctx = next((c for c in code_contexts if c["path"] == edit.file_path), None)
+        if matching_ctx:
+            ed["file_sha"] = matching_ctx.get("file_sha", "")
+            ed["line_range"] = [matching_ctx["start_line"], matching_ctx["end_line"]]
+        proposed_edits.append(ed)
+
+    return {
+        "schema_version": "pr_fix_plan.v1",
+        "delivery_id": delivery_id,
+        "pr_number": pr_ctx.get("pr_number"),
+        "repo_full_name": f"{pr_ctx.get('owner', '')}/{pr_ctx.get('repo', '')}",
+        "summary": result.summary,
+        "proposed_edits": proposed_edits,
+        "risk_level": result.risk_level,
+        "requires_human": result.requires_human,
+        "model_trace": {
+            "provider": LLM_PROVIDER,
+            "model": LLM_MODEL,
+            "code_contexts_used": len(code_contexts),
+            "created_at": _now_iso(),
+        },
+        "created_at": _now_iso(),
+    }
 
 
 def _stub_plan_fix(

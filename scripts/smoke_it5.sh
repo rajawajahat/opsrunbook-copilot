@@ -58,10 +58,10 @@ if $ORCH_OK; then pass "Orchestrator SUCCEEDED"; else fail "Orchestrator did not
 echo ""
 
 # ── 3. Poll for actions ──────────────────────────────────────────
-echo "--- 3. Poll /actions/latest (max 90s) ---"
+echo "--- 3. Poll /actions/latest (max 150s) ---"
 ACTIONS=""
 ACTIONS_OK=false
-for i in $(seq 1 18); do
+for i in $(seq 1 30); do
   sleep 5
   ACTIONS=$(curl -s "$API/v1/incidents/$INCIDENT_ID/actions/latest")
   HAS_RESULTS=$(echo "$ACTIONS" | python3 -c "
@@ -75,7 +75,7 @@ except: print(0)
   echo "  [$((i*5))s] results=$HAS_RESULTS"
   if [ "$HAS_RESULTS" -ge 2 ] 2>/dev/null; then ACTIONS_OK=true; break; fi
 done
-if $ACTIONS_OK; then pass "Actions available ($HAS_RESULTS results)"; else fail "Actions not available after 90s"; fi
+if $ACTIONS_OK; then pass "Actions available ($HAS_RESULTS results)"; else fail "Actions not available after 150s"; fi
 echo ""
 
 # ── 4. Validate packet ───────────────────────────────────────────

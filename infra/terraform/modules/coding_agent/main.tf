@@ -16,23 +16,29 @@ terraform {
 }
 
 locals {
-  llm_client_src = "${path.module}/../../../../packages/llm/llm_client.py"
+  agent_pkg_src = "${path.module}/../../../../packages/agent"
 }
 
 resource "null_resource" "pip_install" {
   triggers = {
     requirements = filesha256("${path.module}/requirements.txt")
     src_hash     = sha256(join(",", [for f in fileset("${path.module}/src", "**/*.py") : filesha256("${path.module}/src/${f}")]))
-    llm_client   = filesha256(local.llm_client_src)
+    agent_hash   = sha256(join(",", [for f in fileset(local.agent_pkg_src, "*.py") : filesha256("${local.agent_pkg_src}/${f}")]))
   }
 
   provisioner "local-exec" {
     command = <<-EOT
       set -e
       rm -rf "${path.module}/build"
-      mkdir -p "${path.module}/build"
-      cp -r "${path.module}/src/"* "${path.module}/build/"
-      cp "${local.llm_client_src}" "${path.module}/build/llm_client.py"
+      mkdir -p "${path.module}/build/agent"
+
+      # Copy Lambda handler
+      cp "${path.module}/src/handler.py" "${path.module}/build/"
+
+      # Copy agent package (preserving package structure for imports)
+      cp "${local.agent_pkg_src}/"*.py "${path.module}/build/agent/"
+
+      # Install Python dependencies
       pip install -r "${path.module}/requirements.txt" \
         -t "${path.module}/build" \
         --platform manylinux2014_x86_64 \
@@ -50,7 +56,7 @@ resource "null_resource" "pip_install" {
 data "archive_file" "lambda_zip" {
   type        = "zip"
   source_dir  = "${path.module}/build"
-  output_path = "${path.module}/dist/actions_runner.zip"
+  output_path = "${path.module}/dist/coding_agent.zip"
   depends_on  = [null_resource.pip_install]
 }
 
@@ -75,24 +81,13 @@ resource "aws_iam_role_policy_attachment" "basic_exec" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-resource "aws_iam_role_policy" "actions_runner_policy" {
-  name = "OpsRunbookDevLambdaActionsRunnerPolicy"
+resource "aws_iam_role_policy" "coding_agent_policy" {
+  name = "${var.name}-policy"
   role = aws_iam_role.lambda_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Sid    = "DynamoDB"
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:Query",
-        ]
-        Resource = var.incidents_table_arn
-      },
       {
         Sid      = "S3ReadPackets"
         Effect   = "Allow"
@@ -134,98 +129,9 @@ resource "aws_iam_role_policy" "eventbridge_put" {
 }
 
 # ──────────────────────────────────────────────────────────────────
-# SSM Parameters (Jira + Teams config)
-# Secret values use ignore_changes — set real values via console/CLI.
-# ──────────────────────────────────────────────────────────────────
-resource "aws_ssm_parameter" "jira_base_url" {
-  name  = "/opsrunbook/dev/jira/base_url"
-  type  = "String"
-  value = "https://yourorg.atlassian.net"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "jira_email" {
-  name  = "/opsrunbook/dev/jira/email"
-  type  = "String"
-  value = "you@example.com"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "jira_api_token" {
-  name  = "/opsrunbook/dev/jira/api_token"
-  type  = "SecureString"
-  value = "REPLACE_ME"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "jira_project_key" {
-  name  = "/opsrunbook/dev/jira/project_key"
-  type  = "String"
-  value = "OPS"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "jira_issue_type" {
-  name  = "/opsrunbook/dev/jira/issue_type"
-  type  = "String"
-  value = "Bug"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "teams_webhook_url" {
-  name  = "/opsrunbook/dev/teams/webhook_url"
-  type  = "SecureString"
-  value = "REPLACE_ME"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-# GitHub integration (Iteration 5)
-resource "aws_ssm_parameter" "github_token" {
-  count = var.enable_github_pr ? 1 : 0
-  name  = "/opsrunbook/dev/github/token"
-  type  = "SecureString"
-  value = "REPLACE_ME"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "github_app_id" {
-  count = var.enable_github_pr ? 1 : 0
-  name  = "/opsrunbook/dev/github/app_id"
-  type  = "String"
-  value = "REPLACE_ME"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "github_app_installation_id" {
-  count = var.enable_github_pr ? 1 : 0
-  name  = "/opsrunbook/dev/github/app_installation_id"
-  type  = "String"
-  value = "REPLACE_ME"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-resource "aws_ssm_parameter" "github_app_private_key_pem" {
-  count = var.enable_github_pr ? 1 : 0
-  name  = "/opsrunbook/dev/github/app_private_key_pem"
-  type  = "SecureString"
-  value = "REPLACE_ME"
-
-  lifecycle { ignore_changes = [value] }
-}
-
-# ──────────────────────────────────────────────────────────────────
 # Lambda
 # ──────────────────────────────────────────────────────────────────
-resource "aws_lambda_function" "actions_runner" {
+resource "aws_lambda_function" "coding_agent" {
   function_name = var.name
   role          = aws_iam_role.lambda_role.arn
   runtime       = "python3.12"
@@ -234,49 +140,49 @@ resource "aws_lambda_function" "actions_runner" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-  timeout     = 180
-  memory_size = 256
+  timeout     = 300
+  memory_size = 512
 
   environment {
     variables = {
-      INCIDENTS_TABLE         = var.incidents_table_name
-      EVENT_BUS_NAME          = var.event_bus_name
-      ACTIONS_DRY_RUN         = var.dry_run ? "true" : "false"
-      ENABLE_GITHUB_PR_ACTION = var.enable_github_pr ? "true" : "false"
-      GITHUB_OWNER            = var.github_owner
-      GITHUB_DEFAULT_BRANCH   = var.github_default_branch
-      LLM_PROVIDER            = var.llm_provider
-      SSM_GROQ_API_KEY        = "/opsrunbook/dev/groq/api_key"
-      SSM_GOOGLE_API_KEY      = "/opsrunbook/dev/google/api_key"
+      EVIDENCE_BUCKET  = var.evidence_bucket
+      PACKETS_TABLE    = var.packets_table_name
+      INCIDENTS_TABLE  = var.incidents_table_name
+      EVENT_BUS_NAME   = var.event_bus_name
+      GITHUB_OWNER     = var.github_owner
+      LLM_PROVIDER     = var.llm_provider
+      LLM_MODEL        = var.llm_model
+      GROQ_API_KEY_SSM = "/opsrunbook/dev/groq/api_key"
+      GITHUB_TOKEN_SSM = "/opsrunbook/dev/github/token"
     }
   }
 }
 
 # ──────────────────────────────────────────────────────────────────
-# EventBridge rule: incident.analyzed -> actions-runner
+# EventBridge rule: actions_runner.completed -> coding-agent
 # ──────────────────────────────────────────────────────────────────
-resource "aws_cloudwatch_event_rule" "incident_analyzed" {
-  name           = "${var.name}-on-incident-analyzed"
+resource "aws_cloudwatch_event_rule" "actions_completed" {
+  name           = "${var.name}-on-actions-completed"
   event_bus_name = var.event_bus_name
-  description    = "Route incident.analyzed to actions-runner Lambda"
+  description    = "Route actions_runner.completed to coding-agent Lambda"
 
   event_pattern = jsonencode({
     source      = ["opsrunbook-copilot"]
-    detail-type = ["incident.analyzed"]
+    detail-type = ["actions_runner.completed"]
   })
 }
 
-resource "aws_cloudwatch_event_target" "actions_runner_target" {
-  rule           = aws_cloudwatch_event_rule.incident_analyzed.name
+resource "aws_cloudwatch_event_target" "coding_agent_target" {
+  rule           = aws_cloudwatch_event_rule.actions_completed.name
   event_bus_name = var.event_bus_name
-  arn            = aws_lambda_function.actions_runner.arn
-  target_id      = "actions-runner-lambda"
+  arn            = aws_lambda_function.coding_agent.arn
+  target_id      = "coding-agent-lambda"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke" {
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.actions_runner.function_name
+  function_name = aws_lambda_function.coding_agent.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.incident_analyzed.arn
+  source_arn    = aws_cloudwatch_event_rule.actions_completed.arn
 }

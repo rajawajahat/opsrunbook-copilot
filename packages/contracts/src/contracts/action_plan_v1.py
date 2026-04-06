@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class PlannedAction(BaseModel):
-    action_type: Literal["create_jira_ticket", "notify_teams"]
+    action_type: Literal["create_jira_ticket", "notify_teams", "create_github_pr"]
     priority: Literal["P0", "P1", "P2"] = "P2"
     title: str
     description_md: str = ""
