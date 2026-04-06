@@ -2,7 +2,7 @@
 set -euo pipefail
 
 API="${API_URL:-http://127.0.0.1:8000}"
-GITHUB_OWNER="${GITHUB_OWNER:-rajawajahat}"
+GITHUB_OWNER="${GITHUB_OWNER:?Set GITHUB_OWNER to your GitHub org/user}"
 EVENT_ID="test-v1-$(uuidgen | tr '[:upper:]' '[:lower:]')"
 END="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 START="$(date -u -v-15M +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '15 minutes ago' +"%Y-%m-%dT%H:%M:%SZ")"

@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ..auth import require_api_key
 from ..settings import load_settings
 from ..stores.s3_store import S3EvidenceStore
 from ..stores.dynamo_store import DynamoStore, IncidentRecord, SnapshotRecord, make_snapshot_sk
 
-router = APIRouter(prefix="/debug", tags=["debug"])
+router = APIRouter(prefix="/debug", tags=["debug"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("/persist")

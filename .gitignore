@@ -40,6 +40,9 @@ dmypy.json
 *.log
 logs/
 
+# ── Local run artifacts ───────────────────────────────────────────
+agent_report_*.json
+
 # ── OS files ──────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

@@ -25,8 +25,7 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 
-variable "aws_region" { type = string }
-variable "aws_profile" { type = string }
+# Variables are declared in variables.tf
 
 locals {
   prefix     = "opsrunbook-copilot-dev"
@@ -42,7 +41,7 @@ module "storage" {
   project                 = "opsrunbook-copilot"
   env                     = "dev"
   aws_region              = var.aws_region
-  evidence_retention_days = 7
+  evidence_retention_days = var.evidence_retention_days
 }
 
 output "evidence_bucket" { value = module.storage.evidence_bucket }
@@ -193,9 +192,9 @@ module "actions_runner" {
   account_id            = local.account_id
   dry_run               = false
   enable_github_pr      = true
-  github_owner          = "rajawajahat"
-  github_default_branch = "main"
-  llm_provider          = "groq"
+  github_owner          = var.github_owner
+  github_default_branch = var.github_default_branch
+  llm_provider          = var.llm_provider
 }
 
 output "actions_runner_arn" { value = module.actions_runner.lambda_arn }
@@ -215,8 +214,8 @@ module "coding_agent" {
   incidents_table_arn  = module.storage.incidents_table_arn
   event_bus_name       = aws_cloudwatch_event_bus.copilot.name
   event_bus_arn        = aws_cloudwatch_event_bus.copilot.arn
-  github_owner         = "rajawajahat"
-  llm_provider         = "groq"
+  github_owner         = var.github_owner
+  llm_provider         = var.llm_provider
   aws_region           = var.aws_region
   account_id           = local.account_id
 }
@@ -236,9 +235,9 @@ module "pr_review_cycle" {
   incidents_table_arn = module.storage.incidents_table_arn
   event_bus_name      = aws_cloudwatch_event_bus.copilot.name
   event_bus_arn       = aws_cloudwatch_event_bus.copilot.arn
-  github_owner        = "rajawajahat"
-  github_app_slug     = "opsrunbook-copilot-bot"
-  llm_provider        = "groq"
+  github_owner        = var.github_owner
+  github_app_slug     = var.github_app_slug
+  llm_provider        = var.llm_provider
 }
 
 output "pr_review_state_machine_arn" { value = module.pr_review_cycle.state_machine_arn }

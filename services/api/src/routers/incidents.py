@@ -21,8 +21,9 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import boto3
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from src.auth import require_api_key
 from src.models import (
     CreateIncidentRequest,
     CreateIncidentResponse,
@@ -42,7 +43,11 @@ from src.stores.snapshots_store import SnapshotsStore
 from src.stores.packets_store import PacketsStore
 from src.stores.actions_store import ActionsStore
 
-router = APIRouter(prefix="/v1/incidents", tags=["incidents"])
+router = APIRouter(
+    prefix="/v1/incidents",
+    tags=["incidents"],
+    dependencies=[Depends(require_api_key)],
+)
 _settings = load_settings()
 snapshots = SnapshotsStore(_settings.snapshots_table, _settings.aws_region)
 packets_store = PacketsStore(_settings.packets_table, _settings.aws_region) if _settings.packets_table else None
@@ -393,18 +398,34 @@ def replay_incident(incident_id: str):
     existing_actions = actions_store.get_latest(incident_id)
     existing_plan = existing_actions.get("action_plan", {}) if existing_actions else {}
 
-    # Re-generate plan from packet (deterministic)
+    # Re-generate plan from packet (deterministic).
+    # plan_generator lives in infra/terraform/modules/actions_runner/src/.
+    # Set PLAN_GENERATOR_PATH env var to that directory when running locally,
+    # or ensure it is on PYTHONPATH. The replay endpoint gracefully degrades
+    # if the module is not importable.
     import sys
     import os
-    _actions_src = os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "..", "..",
-        "infra", "terraform", "modules", "actions_runner", "src",
-    )
-    _actions_src = os.path.abspath(_actions_src)
-    if _actions_src not in sys.path:
-        sys.path.insert(0, _actions_src)
 
-    from plan_generator import generate_action_plan
+    _plan_gen_path = os.environ.get("PLAN_GENERATOR_PATH") or os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__), "..", "..", "..", "..", "..",
+            "infra", "terraform", "modules", "actions_runner", "src",
+        )
+    )
+    if _plan_gen_path not in sys.path:
+        sys.path.insert(0, _plan_gen_path)
+
+    try:
+        from plan_generator import generate_action_plan  # type: ignore[import]
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "plan_generator module not found. "
+                "Set PLAN_GENERATOR_PATH=<repo>/infra/terraform/modules/actions_runner/src "
+                "or add that directory to PYTHONPATH before starting the API."
+            ),
+        )
     new_plan = generate_action_plan(packet, dry_run=True)
 
     # Compute hashes for comparison (ignore timestamps)

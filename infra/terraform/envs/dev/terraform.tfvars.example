@@ -1,0 +1,19 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is git-ignored and must NEVER be committed.
+
+# ── AWS ───────────────────────────────────────────────────────────
+aws_region  = "us-east-1"
+aws_profile = "your-aws-profile"   # matches a profile in ~/.aws/config
+
+# ── GitHub ────────────────────────────────────────────────────────
+github_owner          = "your-github-org-or-username"
+github_default_branch = "main"
+github_app_slug       = "opsrunbook-copilot-bot"  # slug of your GitHub App
+
+# ── LLM ──────────────────────────────────────────────────────────
+# Options: groq | gemini | stub
+# "stub" works without an API key — returns deterministic heuristics only.
+llm_provider = "groq"
+
+# ── Optional ─────────────────────────────────────────────────────
+evidence_retention_days = 7

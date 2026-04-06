@@ -17,7 +17,7 @@ set -euo pipefail
 API="${API_URL:-http://127.0.0.1:8000}"
 SECRET="${GITHUB_WEBHOOK_SECRET:?Set GITHUB_WEBHOOK_SECRET}"
 PR_NUMBER="${PR_NUMBER:-1}"
-REPO="${GITHUB_REPO:-rajawajahat/opsrunbook-copilot-test}"
+REPO="${GITHUB_REPO:?Set GITHUB_REPO to owner/repo-name}"
 DELIVERY_ID="test-dlv-$(uuidgen | tr '[:upper:]' '[:lower:]')"
 
 PASS=0; FAIL=0; WARN=0
