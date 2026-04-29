@@ -1,14 +1,26 @@
 # OpsRunbook Copilot
 
-An open-source agentic incident-response pipeline that monitors your AWS services,
-analyses errors with an LLM, and automatically:
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
+[![LangGraph](https://img.shields.io/badge/LangGraph-agentic-1C3C3C?style=flat)](https://github.com/langchain-ai/langgraph)
+[![AWS](https://img.shields.io/badge/AWS-Lambda%20%7C%20EventBridge%20%7C%20Step%20Functions-232F3E?style=flat&logo=amazonaws&logoColor=white)](https://aws.amazon.com)
+[![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC?style=flat&logo=terraform&logoColor=white)](https://terraform.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
+
+**An open-source agentic incident-response pipeline that monitors your AWS
+services, analyses errors with an LLM, and automatically:**
 
 - Creates a **Jira ticket** with structured findings
 - Sends a **Teams / Slack notification**
-- Opens a **GitHub Pull Request** with a proposed code fix
+- Opens a **GitHub Pull Request** with a proposed code fix —
+  then iterates on reviewer feedback autonomously
 
-Everything runs in your own AWS account. No data leaves your infrastructure except
-for the LLM API call (Groq or Google Gemini — swappable).
+Everything runs in your own AWS account. No data leaves your infrastructure
+except for the LLM API call (Groq or Google Gemini — swappable).
+
+> Built by [Raja Wajahat Hussain](https://github.com/rajawajahat) —
+> inspired by production incident automation work at enterprise scale.
+> The system running at Pfizer eliminated ~80% of manual triage,
+> recovering ~15 engineer-hours/week.
 
 ---
 
